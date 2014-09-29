@@ -39,10 +39,13 @@ import random
 import boto
 import boto.ec2
 import paramiko
+import copy
+import datetime
 
 STATE_FILENAME = os.path.expanduser('~/.bees')
 
 # Utilities
+
 
 def _read_server_list():
     instance_ids = []
@@ -61,6 +64,7 @@ def _read_server_list():
 
     return (username, key_name, zone, instance_ids)
 
+
 def _write_server_list(username, key_name, zone, instances):
     with open(STATE_FILENAME, 'w') as f:
         f.write('%s\n' % username)
@@ -68,21 +72,28 @@ def _write_server_list(username, key_name, zone, instances):
         f.write('%s\n' % zone)
         f.write('\n'.join([instance.id for instance in instances]))
 
+
 def _delete_server_list():
     os.remove(STATE_FILENAME)
+
 
 def _get_pem_path(key):
     return os.path.expanduser('~/.ssh/%s.pem' % key)
 
+
 def _get_region(zone):
-    return zone if 'gov' in zone else zone[:-1] # chop off the "d" in the "us-east-1d" to get the "Region"
+    # chop off the "d" in the "us-east-1d" to get the "Region"
+    return zone if 'gov' in zone else zone[:-1]
+
 
 def _get_security_group_ids(connection, security_group_names, subnet):
     ids = []
-    # Since we cannot get security groups in a vpc by name, we get all security groups and parse them by name later
+    # Since we cannot get security groups in a vpc by name, we get all
+    # security groups and parse them by name later
     security_groups = connection.get_all_security_groups()
 
-    # Parse the name of each security group and add the id of any match to the group list
+    # Parse the name of each security group and add the id of any match to the
+    # group list
     for group in security_groups:
         for name in security_group_names:
             if group.name == name:
@@ -96,12 +107,88 @@ def _get_security_group_ids(connection, security_group_names, subnet):
 
 # Methods
 
-def up(count, group, zone, image_id, instance_type, username, key_name, subnet):
+
+def _wait_for_fulfillment(conn, request_ids):
+    """Loop through all pending request ids waiting for them to be fulfilled.
+    If a request is fulfilled, remove it from pending_request_ids.
+    If there are still pending requests, sleep and check again in 10 seconds.
+    Only return when all spot requests have been fulfilled."""
+    pending_request_ids = copy.deepcopy(request_ids)
+
+    while pending_request_ids:
+        results = conn.get_all_spot_instance_requests(
+            filters={'status-code': 'fulfilled'},
+            request_ids=pending_request_ids)
+        for result in results:
+            pending_request_ids.pop(pending_request_ids.index(result.id))
+            print "spot request `{}` fulfilled!".format(result.id)
+
+        time.sleep(10)
+    print "all spots fulfilled!"
+
+
+def _create_spot_instance(count, group, zone, image_id, instance_type,
+                          username, key_name, subnet, max_spot_bid):
+    region_name = _get_region(zone)
+
+    ec2_connection = boto.ec2.connect_to_region(region_name)
+
+    requests = ec2_connection.get_all_spot_instance_requests(
+        filters={'launch_group': 'beeswithmachineguns',
+                 'state': ['active', 'open']})
+
+    if requests:
+        _wait_for_fulfillment(ec2_connection, [requests[0].id])
+
+        fulfilled = ec2_connection.get_all_spot_instance_requests(
+            filters={'launch_group': 'beeswithmachineguns',
+                     'status-code': 'fulfilled'})
+
+        reservations = ec2_connection.get_all_instances(
+            instance_ids=fulfilled[0].instance_id)
+
+        return [i for r in reservations for i in r.instances]
+
+    groups = [group] if subnet is None else _get_security_group_ids(
+        ec2_connection, [group], subnet)
+
+    req = ec2_connection.request_spot_instances(
+        count=count,
+        price=max_spot_bid,
+        instance_type=instance_type,
+        image_id=image_id,
+        launch_group="beeswithmachineguns",
+        availability_zone_group=region_name,
+        key_name=key_name,
+        security_groups=groups,
+        placement=None if 'gov' in zone else zone,
+        subnet_id=subnet
+    )
+
+    ec2_connection.get_all_spot_instance_requests(
+        request_ids=[req[0].id],
+        filters={'launch_group': 'beeswithmachineguns',
+                 'status-code': ['fulfilled', 'open']})
+
+    _wait_for_fulfillment(ec2_connection, [req[0].id])
+
+    fulfilled = ec2_connection.get_all_spot_instance_requests(
+        filters={'launch_group': 'beeswithmachineguns',
+                 'status-code': 'fulfilled'})
+
+    reservations = ec2_connection.get_all_instances(
+        instance_ids=[f.instance_id for f in fulfilled])
+
+    return [i for r in reservations for i in r.instances]
+
+
+def up(count, group, zone, image_id, instance_type, username, key_name, subnet, bid):
     """
     Startup the load testing server.
     """
 
-    existing_username, existing_key_name, existing_zone, instance_ids = _read_server_list()
+    existing_username, existing_key_name, existing_zone, instance_ids = _read_server_list(
+    )
 
     if instance_ids:
         print 'Bees are already assembled and awaiting orders.'
@@ -120,21 +207,28 @@ def up(count, group, zone, image_id, instance_type, username, key_name, subnet):
 
     print 'Attempting to call up %i bees.' % count
 
-    reservation = ec2_connection.run_instances(
-        image_id=image_id,
-        min_count=count,
-        max_count=count,
-        key_name=key_name,
-        security_groups=[group] if subnet is None else _get_security_group_ids(ec2_connection, [group], subnet),
-        instance_type=instance_type,
-        placement=None if 'gov' in zone else zone,
-        subnet_id=subnet)
+    if bid:
+        instances = _create_spot_instance(
+            count, group, zone, image_id, instance_type,
+            username, key_name, subnet, bid)
+    else:
+        reservation = ec2_connection.run_instances(
+            image_id=image_id,
+            min_count=count,
+            max_count=count,
+            key_name=key_name,
+            security_groups=[group] if subnet is None else _get_security_group_ids(
+                ec2_connection, [group], subnet),
+            instance_type=instance_type,
+            placement=None if 'gov' in zone else zone,
+            subnet_id=subnet)
+        instances = reservation.instances
 
     print 'Waiting for bees to load their machine guns...'
 
     instance_ids = []
 
-    for instance in reservation.instances:
+    for instance in instances:
         instance.update()
         while instance.state != 'running':
             print '.'
@@ -145,11 +239,12 @@ def up(count, group, zone, image_id, instance_type, username, key_name, subnet):
 
         print 'Bee %s is ready for the attack.' % instance.id
 
-    ec2_connection.create_tags(instance_ids, { "Name": "a bee!" })
+    ec2_connection.create_tags(instance_ids, {"Name": "a bee!"})
 
-    _write_server_list(username, key_name, zone, reservation.instances)
+    _write_server_list(username, key_name, zone, instances)
 
-    print 'The swarm has assembled %i bees.' % len(reservation.instances)
+    print 'The swarm has assembled %i bees.' % len(instances)
+
 
 def report():
     """
@@ -172,6 +267,7 @@ def report():
 
     for instance in instances:
         print 'Bee %s: %s @ %s' % (instance.id, instance.state, instance.ip_address)
+
 
 def down():
     """
@@ -196,6 +292,7 @@ def down():
 
     _delete_server_list()
 
+
 def _attack(params):
     """
     Test the target URL with requests.
@@ -208,10 +305,12 @@ def _attack(params):
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-        pem_path = params.get('key_name') and _get_pem_path(params['key_name']) or None
+        pem_path = params.get('key_name') and _get_pem_path(
+            params['key_name']) or None
         if not os.path.isfile(pem_path):
             client.load_system_host_keys()
-            client.connect(params['instance_name'], username=params['username'])
+            client.connect(
+                params['instance_name'], username=params['username'])
         else:
             client.connect(
                 params['instance_name'],
@@ -235,15 +334,18 @@ def _attack(params):
             return None
 
         if params['post_file']:
-            pem_file_path=_get_pem_path(params['key_name'])
-            os.system("scp -q -o 'StrictHostKeyChecking=no' -i %s %s %s@%s:/tmp/honeycomb" % (pem_file_path, params['post_file'], params['username'], params['instance_name']))
+            pem_file_path = _get_pem_path(params['key_name'])
+            os.system(
+                "scp -q -o 'StrictHostKeyChecking=no' -i %s %s %s@%s:/tmp/honeycomb" %
+                (pem_file_path, params['post_file'], params['username'], params['instance_name']))
             options += ' -T "%(mime_type)s; charset=UTF-8" -p /tmp/honeycomb' % params
 
         if params['keep_alive']:
             options += ' -k'
 
         if params['cookies'] is not '':
-            options += ' -H \"Cookie: %ssessionid=NotARealSessionID;\"' % params['cookies']
+            options += ' -H \"Cookie: %ssessionid=NotARealSessionID;\"' % params[
+                'cookies']
         else:
             options += ' -C \"sessionid=NotARealSessionID\"'
 
@@ -257,22 +359,29 @@ def _attack(params):
         response = {}
 
         ab_results = stdout.read()
-        ms_per_request_search = re.search('Time\ per\ request:\s+([0-9.]+)\ \[ms\]\ \(mean\)', ab_results)
+        ms_per_request_search = re.search(
+            'Time\ per\ request:\s+([0-9.]+)\ \[ms\]\ \(mean\)', ab_results)
 
         if not ms_per_request_search:
             print 'Bee %i lost sight of the target (connection timed out running ab).' % params['i']
             return None
 
-        requests_per_second_search = re.search('Requests\ per\ second:\s+([0-9.]+)\ \[#\/sec\]\ \(mean\)', ab_results)
-        failed_requests = re.search('Failed\ requests:\s+([0-9.]+)', ab_results)
-        complete_requests_search = re.search('Complete\ requests:\s+([0-9]+)', ab_results)
+        requests_per_second_search = re.search(
+            'Requests\ per\ second:\s+([0-9.]+)\ \[#\/sec\]\ \(mean\)', ab_results)
+        failed_requests = re.search(
+            'Failed\ requests:\s+([0-9.]+)', ab_results)
+        complete_requests_search = re.search(
+            'Complete\ requests:\s+([0-9]+)', ab_results)
 
         response['ms_per_request'] = float(ms_per_request_search.group(1))
-        response['requests_per_second'] = float(requests_per_second_search.group(1))
+        response['requests_per_second'] = float(
+            requests_per_second_search.group(1))
         response['failed_requests'] = float(failed_requests.group(1))
-        response['complete_requests'] = float(complete_requests_search.group(1))
+        response['complete_requests'] = float(
+            complete_requests_search.group(1))
 
-        stdin, stdout, stderr = client.exec_command('cat %(csv_filename)s' % params)
+        stdin, stdout, stderr = client.exec_command(
+            'cat %(csv_filename)s' % params)
         response['request_time_cdf'] = []
         for row in csv.DictReader(stdout):
             row["Time in ms"] = float(row["Time in ms"])
@@ -293,26 +402,39 @@ def _attack(params):
 def _summarize_results(results, params, csv_filename):
     summarized_results = dict()
     summarized_results['timeout_bees'] = [r for r in results if r is None]
-    summarized_results['exception_bees'] = [r for r in results if type(r) == socket.error]
-    summarized_results['complete_bees'] = [r for r in results if r is not None and type(r) != socket.error]
-    summarized_results['timeout_bees_params'] = [p for r, p in zip(results, params) if r is None]
-    summarized_results['exception_bees_params'] = [p for r, p in zip(results, params) if type(r) == socket.error]
-    summarized_results['complete_bees_params'] = [p for r, p in zip(results, params) if r is not None and type(r) != socket.error]
-    summarized_results['num_timeout_bees'] = len(summarized_results['timeout_bees'])
-    summarized_results['num_exception_bees'] = len(summarized_results['exception_bees'])
-    summarized_results['num_complete_bees'] = len(summarized_results['complete_bees'])
+    summarized_results['exception_bees'] = [
+        r for r in results if type(r) == socket.error]
+    summarized_results['complete_bees'] = [
+        r for r in results if r is not None and type(r) != socket.error]
+    summarized_results['timeout_bees_params'] = [
+        p for r, p in zip(results, params) if r is None]
+    summarized_results['exception_bees_params'] = [
+        p for r, p in zip(results, params) if type(r) == socket.error]
+    summarized_results['complete_bees_params'] = [
+        p for r, p in zip(results, params) if r is not None and type(r) != socket.error]
+    summarized_results['num_timeout_bees'] = len(
+        summarized_results['timeout_bees'])
+    summarized_results['num_exception_bees'] = len(
+        summarized_results['exception_bees'])
+    summarized_results['num_complete_bees'] = len(
+        summarized_results['complete_bees'])
 
-    complete_results = [r['complete_requests'] for r in summarized_results['complete_bees']]
+    complete_results = [r['complete_requests']
+                        for r in summarized_results['complete_bees']]
     summarized_results['total_complete_requests'] = sum(complete_results)
 
-    complete_results = [r['failed_requests'] for r in summarized_results['complete_bees']]
+    complete_results = [r['failed_requests']
+                        for r in summarized_results['complete_bees']]
     summarized_results['total_failed_requests'] = sum(complete_results)
 
-    complete_results = [r['requests_per_second'] for r in summarized_results['complete_bees']]
+    complete_results = [r['requests_per_second']
+                        for r in summarized_results['complete_bees']]
     summarized_results['mean_requests'] = sum(complete_results)
 
-    complete_results = [r['ms_per_request'] for r in summarized_results['complete_bees']]
-    summarized_results['mean_response'] = sum(complete_results) / summarized_results['num_complete_bees']
+    complete_results = [r['ms_per_request']
+                        for r in summarized_results['complete_bees']]
+    summarized_results['mean_response'] = sum(
+        complete_results) / summarized_results['num_complete_bees']
 
     summarized_results['tpr_bounds'] = params[0]['tpr']
     summarized_results['rps_bounds'] = params[0]['rps']
@@ -329,9 +451,11 @@ def _summarize_results(results, params, csv_filename):
         else:
             summarized_results['performance_accepted'] = False
 
-    summarized_results['request_time_cdf'] = _get_request_time_cdf(summarized_results['total_complete_requests'], summarized_results['complete_bees'])
+    summarized_results['request_time_cdf'] = _get_request_time_cdf(
+        summarized_results['total_complete_requests'], summarized_results['complete_bees'])
     if csv_filename:
-        _create_request_time_cdf_csv(results, summarized_results['complete_bees_params'], summarized_results['request_time_cdf'], csv_filename)
+        _create_request_time_cdf_csv(results, summarized_results[
+                                     'complete_bees_params'], summarized_results['request_time_cdf'], csv_filename)
 
     return summarized_results
 
@@ -367,7 +491,8 @@ def _get_request_time_cdf(total_complete_requests, complete_bees):
             j = int(random.random() * len(cdf))
             sample_response_times.append(cdf[j]["Time in ms"])
     sample_response_times.sort()
-    request_time_cdf = sample_response_times[0:sample_size:sample_size / n_final_sample]
+    request_time_cdf = sample_response_times[
+        0:sample_size:sample_size / n_final_sample]
 
     return request_time_cdf
 
@@ -432,7 +557,8 @@ def attack(url, n, c, **options):
         try:
             stream = open(csv_filename, 'w')
         except IOError, e:
-            raise IOError("Specified csv_filename='%s' is not writable. Check permissions or specify a different filename and try again." % csv_filename)
+            raise IOError(
+                "Specified csv_filename='%s' is not writable. Check permissions or specify a different filename and try again." % csv_filename)
 
     if not instance_ids:
         print 'No bees are ready to attack.'
@@ -513,7 +639,8 @@ def attack(url, n, c, **options):
     # Ping url so it will be cached for testing
     dict_headers = {}
     if headers is not '':
-        dict_headers = headers = dict(j.split(':') for j in [i.strip() for i in headers.split(';') if i != ''])
+        dict_headers = headers = dict(j.split(':')
+                                      for j in [i.strip() for i in headers.split(';') if i != ''])
 
     for key, value in dict_headers.iteritems():
         request.add_header(key, value)
@@ -537,6 +664,118 @@ def attack(url, n, c, **options):
             print("Your targets performance tests did not meet our standard.")
             sys.exit(1)
         else:
-            print('Your targets performance tests meet our standards, the Queen sends her regards.')
+            print(
+                'Your targets performance tests meet our standards, the Queen sends her regards.')
             sys.exit(0)
 
+# spot history code is inspired by starcluster
+# https://github.com/jtriley/StarCluster
+import iso8601
+import calendar
+
+
+def iso_to_datetime_tuple(iso):
+    """
+    Converts an iso time string to a datetime tuple
+    """
+    return iso8601.parse_date(iso)
+
+
+def _iso_to_unix_time(iso):
+    dtup = iso_to_datetime_tuple(iso)
+    secs = calendar.timegm(dtup.timetuple())
+    return secs
+
+
+def _iso_to_javascript_timestamp(iso):
+    """
+    Convert dates to Javascript timestamps (number of milliseconds since
+    January 1st 1970 UTC)
+    """
+    secs = _iso_to_unix_time(iso)
+    return secs * 1000
+
+
+def _is_iso_time(iso):
+    """
+    Returns True if provided time can be parsed in iso format
+    to a datetime tuple
+    """
+    try:
+        iso_to_datetime_tuple(iso)
+        return True
+    except iso8601.ParseError:
+        return False
+
+
+def _datetime_tuple_to_iso(tup):
+    """
+    Converts a datetime tuple to a UTC iso time string
+    """
+    iso = datetime.datetime.strftime(tup.astimezone(iso8601.iso8601.UTC),
+                                     "%Y-%m-%dT%H:%M:%S.%fZ")
+    return iso
+
+
+def _get_utc_now(iso=False):
+    """
+    Returns datetime.utcnow with UTC timezone info
+    """
+    now = datetime.datetime.utcnow().replace(tzinfo=iso8601.iso8601.UTC)
+    if iso:
+        return _datetime_tuple_to_iso(now)
+    else:
+        return now
+
+
+def spot_price(instance_type, zone=None, classic=False, vpc=False):
+    if classic and vpc:
+        raise BaseException(
+            "classic and vpc kwargs are mutually exclusive")
+    if not classic and not vpc:
+        classic = not vpc
+    if classic:
+        pdesc = "Linux/UNIX"
+        short_pdesc = "EC2-Classic"
+    else:
+        pdesc = "Linux/UNIX (Amazon VPC)"
+        short_pdesc = "VPC"
+    print ("Fetching spot history for %s (%s)" %
+          (instance_type, short_pdesc))
+
+    days_ago = 1
+    end_tup = _get_utc_now()
+
+    start = _datetime_tuple_to_iso(
+        end_tup - datetime.timedelta(days=days_ago))
+    end = _datetime_tuple_to_iso(end_tup)
+
+    region_name = _get_region(zone)
+
+    conn = boto.ec2.connect_to_region(region_name)
+
+    assert _is_iso_time(end)
+    assert _is_iso_time(start)
+
+    hist = conn.get_spot_price_history(start_time=start, end_time=end,
+                                       availability_zone=zone,
+                                       instance_type=instance_type,
+                                       product_description=pdesc)
+
+    if not hist:
+        return False
+    dates = []
+    prices = []
+    data = []
+    for item in hist:
+        timestamp = _iso_to_javascript_timestamp(item.timestamp)
+        price = item.price
+        dates.append(timestamp)
+        prices.append(price)
+        data.append([timestamp, price])
+    maximum = max(prices)
+    avg = sum(prices) / float(len(prices))
+
+    print ("Current price: $%.4f" % prices[0])
+    print ("Max price: $%.4f" % maximum)
+    print ("Average price: $%.4f" % avg)

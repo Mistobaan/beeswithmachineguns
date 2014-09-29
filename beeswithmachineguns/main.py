@@ -28,6 +28,7 @@ import bees
 from urlparse import urlparse
 from optparse import OptionParser, OptionGroup
 
+
 def parse_options():
     """
     Handle the command line arguments for spinning up bees
@@ -51,6 +52,11 @@ commands:
                            """In order to spin up new servers you will need to specify at least the -k command, which is the name of the EC2 keypair to use for creating and connecting to the new servers. The bees will expect to find a .pem file with this name in ~/.ssh/. Alternatively, bees can use SSH Agent for the key.""")
 
     # Required
+    up_group.add_option('-b', '--bid', metavar="BID", nargs=1,
+                        action='store', dest='bid_price', type='string',
+                        default="",
+                        help='The bid price in dollars to offer for the given spot instance')
+
     up_group.add_option('-k', '--key',  metavar="KEY",  nargs=1,
                         action='store', dest='key', type='string',
                         help="The ssh key pair name to use to connect to the new servers.")
@@ -89,21 +95,25 @@ commands:
     attack_group.add_option('-K', '--keepalive', metavar="KEEP_ALIVE", nargs=0,
                             action='store', dest='keep_alive', type='string', default=False,
                             help="Keep-Alive connection.")
-    attack_group.add_option('-p', '--post-file',  metavar="POST_FILE",  nargs=1,
-                            action='store', dest='post_file', type='string', default=False,
-                            help="The POST file to deliver with the bee's payload.")
-    attack_group.add_option('-m', '--mime-type',  metavar="MIME_TYPE",  nargs=1,
-                            action='store', dest='mime_type', type='string', default='text/plain',
-                            help="The MIME type to send with the request.")
+    attack_group.add_option(
+        '-p', '--post-file', metavar="POST_FILE", nargs=1,
+        action='store', dest='post_file', type='string', default=False,
+        help="The POST file to deliver with the bee's payload.")
+    attack_group.add_option(
+        '-m', '--mime-type', metavar="MIME_TYPE", nargs=1,
+        action='store', dest='mime_type', type='string', default='text/plain',
+        help="The MIME type to send with the request.")
     attack_group.add_option('-n', '--number', metavar="NUMBER", nargs=1,
                             action='store', dest='number', type='int', default=1000,
                             help="The number of total connections to make to the target (default: 1000).")
-    attack_group.add_option('-C', '--cookies', metavar="COOKIES", nargs=1, action='store', dest='cookies',
-                            type='string', default='',
-                            help='Cookies to send during http requests. The cookies should be passed using standard cookie formatting, separated by semi-colons and assigned with equals signs.')
-    attack_group.add_option('-c', '--concurrent', metavar="CONCURRENT", nargs=1,
-                            action='store', dest='concurrent', type='int', default=100,
-                            help="The number of concurrent connections to make to the target (default: 100).")
+    attack_group.add_option(
+        '-C', '--cookies', metavar="COOKIES", nargs=1, action='store', dest='cookies',
+        type='string', default='',
+        help='Cookies to send during http requests. The cookies should be passed using standard cookie formatting, separated by semi-colons and assigned with equals signs.')
+    attack_group.add_option(
+        '-c', '--concurrent', metavar="CONCURRENT", nargs=1,
+        action='store', dest='concurrent', type='int', default=100,
+        help="The number of concurrent connections to make to the target (default: 100).")
     attack_group.add_option('-H', '--headers', metavar="HEADERS", nargs=1,
                             action='store', dest='headers', type='string', default='',
                             help="HTTP headers to send to the target to attack. Multiple headers should be separated by semi-colons, e.g header1:value1;header2:value2")
@@ -112,12 +122,15 @@ commands:
                             help="Store the distribution of results in a csv file for all completed bees (default: '').")
 
     # Optional
-    attack_group.add_option('-T', '--tpr', metavar='TPR', nargs=1, action='store', dest='tpr', default=None, type='float',
-                            help='The upper bounds for time per request. If this option is passed and the target is below the value a 1 will be returned with the report details (default: None).')
-    attack_group.add_option('-R', '--rps', metavar='RPS', nargs=1, action='store', dest='rps', default=None, type='float',
-                            help='The lower bounds for request per second. If this option is passed and the target is above the value a 1 will be returned with the report details (default: None).')
-    attack_group.add_option('-A', '--basic_auth', metavar='basic_auth', nargs=1, action='store', dest='basic_auth', default='', type='string',
-                            help='BASIC authentication credentials, format auth-username:password (default: None).')
+    attack_group.add_option(
+        '-T', '--tpr', metavar='TPR', nargs=1, action='store', dest='tpr', default=None, type='float',
+        help='The upper bounds for time per request. If this option is passed and the target is below the value a 1 will be returned with the report details (default: None).')
+    attack_group.add_option(
+        '-R', '--rps', metavar='RPS', nargs=1, action='store', dest='rps', default=None, type='float',
+        help='The lower bounds for request per second. If this option is passed and the target is above the value a 1 will be returned with the report details (default: None).')
+    attack_group.add_option(
+        '-A', '--basic_auth', metavar='basic_auth', nargs=1, action='store', dest='basic_auth', default='', type='string',
+        help='BASIC authentication credentials, format auth-username:password (default: None).')
 
     parser.add_option_group(attack_group)
 
@@ -130,11 +143,15 @@ commands:
 
     if command == 'up':
         if not options.key:
-            parser.error('To spin up new instances you need to specify a key-pair name with -k')
+            parser.error(
+                'To spin up new instances you need to specify a key-pair name with -k')
 
         if options.group == 'default':
             print 'New bees will use the "default" EC2 security group. Please note that port 22 (SSH) is not normally open on this group. You will need to use to the EC2 tools to open it before you will be able to attack.'
-        bees.up(options.servers, options.group, options.zone, options.instance, options.type, options.login, options.key, options.subnet)
+        bees.up(options.servers, options.group, options.zone, options.instance,
+                options.type, options.login, options.key, options.subnet,
+                options.bid_price)
+
     elif command == 'attack':
         if not options.url:
             parser.error('To run an attack you need to specify a url with -u')
@@ -144,7 +161,8 @@ commands:
             parsed = urlparse("http://" + options.url)
 
         if not parsed.path:
-            parser.error('It appears your URL lacks a trailing slash, this will disorient the bees. Please try again with a trailing slash.')
+            parser.error(
+                'It appears your URL lacks a trailing slash, this will disorient the bees. Please try again with a trailing slash.')
 
         additional_options = dict(
             cookies=options.cookies,
@@ -158,12 +176,15 @@ commands:
             basic_auth=options.basic_auth
         )
 
-        bees.attack(options.url, options.number, options.concurrent, **additional_options)
+        bees.attack(options.url, options.number,
+                    options.concurrent, **additional_options)
 
     elif command == 'down':
         bees.down()
     elif command == 'report':
         bees.report()
+    elif command == 'spotprice':
+        bees.spot_price(options.type, options.zone, options.subnet)
 
 
 def main():
