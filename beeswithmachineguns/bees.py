@@ -168,6 +168,9 @@ def _create_spot_instance(count, group, zone, image_id, instance_type,
         subnet_id=subnet
     )
 
+    print "wait for requests to be accepted"
+    time.sleep(10)
+
     ec2_connection.get_all_spot_instance_requests(
         request_ids=[r.id for r in req],
         filters={'launch_group': 'beeswithmachineguns',
@@ -327,6 +330,15 @@ def _attack(params):
             for h in params['headers'].split(';'):
                 if h != '':
                     options += ' -H "%s"' % h.strip()
+
+        # install
+        channel = client.invoke_shell()
+        stdin = channel.makefile('wb')
+        stdout = channel.makefile('rb')
+
+        stdin.write(b'sudo yum install -y httpd-tools\rexit\r')
+
+        print stdout.read()
 
         stdin, stdout, stderr = client.exec_command('mktemp')
         params['csv_filename'] = stdout.read().strip()
