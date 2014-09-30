@@ -58,7 +58,7 @@ def _read_server_list():
         key_name = f.readline().strip()
         zone = f.readline().strip()
         text = f.read()
-        instance_ids = text.split('\n')
+        instance_ids = [i for i in text.split('\n') if i.strip()]
 
         print 'Read %i bees from the roster.' % len(instance_ids)
 
@@ -78,7 +78,9 @@ def _delete_server_list():
 
 
 def _get_pem_path(key):
-    return os.path.expanduser('~/.ssh/%s.pem' % key)
+    key = os.path.expanduser('~/.ssh/%s.pem' % key)
+    print "using ", key
+    return key
 
 
 def _get_region(zone):
@@ -138,14 +140,15 @@ def _create_spot_instance(count, group, zone, image_id, instance_type,
                  'state': ['active', 'open']})
 
     if requests:
-        _wait_for_fulfillment(ec2_connection, [requests[0].id])
+        request_ids = [r.id for r in requests]
+        _wait_for_fulfillment(ec2_connection, request_ids)
 
         fulfilled = ec2_connection.get_all_spot_instance_requests(
             filters={'launch_group': 'beeswithmachineguns',
                      'status-code': 'fulfilled'})
 
         reservations = ec2_connection.get_all_instances(
-            instance_ids=fulfilled[0].instance_id)
+            instance_ids=[f.instance_id for f in fulfilled])
 
         return [i for r in reservations for i in r.instances]
 
@@ -166,11 +169,11 @@ def _create_spot_instance(count, group, zone, image_id, instance_type,
     )
 
     ec2_connection.get_all_spot_instance_requests(
-        request_ids=[req[0].id],
+        request_ids=[r.id for r in req],
         filters={'launch_group': 'beeswithmachineguns',
                  'status-code': ['fulfilled', 'open']})
 
-    _wait_for_fulfillment(ec2_connection, [req[0].id])
+    _wait_for_fulfillment(ec2_connection, [r.id for r in req])
 
     fulfilled = ec2_connection.get_all_spot_instance_requests(
         filters={'launch_group': 'beeswithmachineguns',
@@ -396,6 +399,8 @@ def _attack(params):
 
         return response
     except socket.error, e:
+        import traceback
+        traceback.print_exc()
         return e
 
 
@@ -649,9 +654,17 @@ def attack(url, n, c, **options):
     response.read()
 
     print 'Organizing the swarm.'
+
     # Spin up processes for connecting to EC2 instances
-    pool = Pool(len(params))
-    results = pool.map(_attack, params)
+    debug = True
+    if not debug:
+        pool = Pool(len(params))
+        results = pool.map(_attack, params)
+    else:
+        results = []
+        for p in params:
+            print "Bee %s" % p["instance_name"]
+            results.append(_attack(p))
 
     summarized_results = _summarize_results(results, params, csv_filename)
     print 'Offensive complete.'
