@@ -33,7 +33,6 @@ import urllib2
 import base64
 import csv
 import sys
-import math
 import random
 
 import boto
@@ -99,10 +98,10 @@ def _get_security_group_ids(connection, security_group_names, subnet):
     for group in security_groups:
         for name in security_group_names:
             if group.name == name:
-                if subnet == None:
-                    if group.vpc_id == None:
+                if subnet is None:
+                    if group.vpc_id is None:
                         ids.append(group.id)
-                    elif group.vpc_id != None:
+                    elif group.vpc_id is not None:
                         ids.append(group.id)
 
         return ids
@@ -657,7 +656,10 @@ def attack(url, n, c, **options):
     dict_headers = {}
     if headers is not '':
         dict_headers = headers = dict(j.split(':')
-                                      for j in [i.strip() for i in headers.split(';') if i != ''])
+                                      for j in [i.strip()
+                                                for i in headers.split(';')
+                                                if i != ''
+                                                ])
 
     for key, value in dict_headers.iteritems():
         request.add_header(key, value)
