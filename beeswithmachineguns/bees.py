@@ -325,7 +325,7 @@ def _run_vegeta(client, params, options):
     stdin = channel.makefile('wb')
     stdout = channel.makefile('rb')
     print "Running Vegeta "
-    cmd = b'sudo docker run -v /tmp:/tmp -w /tmp --rm beeswithmachineguns/client:latest attack -duration=1m -targets=/tmp/targets -output=result.bin \r'
+    cmd = b'sudo docker run -v /tmp:/tmp -w /tmp --rm beeswithmachineguns/client:latest attack -rate=2000 -duration=1m -targets=/tmp/targets -output=result.bin \r'
     print cmd
     stdin.write(cmd)
     cmd = b'sudo docker run -v /tmp:/tmp -w /tmp --rm beeswithmachineguns/client:latest report -input=/tmp/result.bin -reporter=json -output=/tmp/output.json \r'
@@ -444,13 +444,22 @@ import tempfile
 import math
 
 
+def file_len(fname):
+    with open(fname) as f:
+        for i, l in enumerate(f):
+            pass
+    return i + 1
+
+
 def _split(filename, n):
     chunks = []
-    lines = 0
-    with open(filename) as f:
-        f.readline()
-        lines += 1
+
+    lines = file_len(filename)
+
     lines_per_file = int(math.ceil(lines / float(n)))
+
+    print "Diving test file in %d parts each with %d requests " % (lines, n)
+
     with open(filename) as f:
         for i, g in enumerate(grouper(lines_per_file, f, fillvalue=None)):
             with tempfile.NamedTemporaryFile('w', delete=False) as fout:
@@ -460,9 +469,9 @@ def _split(filename, n):
                         j -= 1  # don't count this line
                         break
                     fout.write(line)
-            result = 'small_file_{0}'.format(i * n + j)
-            os.rename(fout.name, result)
-            chunks.append(result)
+            #result = 'small_file_{0}'.format(i * n + j)
+            print fout.name
+            chunks.append(fout.name)
     return chunks
 
 
@@ -779,7 +788,7 @@ def attack(url, n, c, **options):
     print 'Organizing the swarm.'
 
     # Spin up processes for connecting to EC2 instances
-    debug = True
+    debug = False
     if not debug:
         pool = Pool(len(params))
         results = pool.map(_attack, params)
