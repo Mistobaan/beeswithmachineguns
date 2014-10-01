@@ -71,8 +71,8 @@ commands:
                         action='store', dest='zone', type='string', default='us-east-1d',
                         help="The availability zone to start the instances in (default: us-east-1d).")
     up_group.add_option('-i', '--instance', metavar="INSTANCE", nargs=1,
-                        action='store', dest='instance', type='string', default='ami-7c807d14',
-                        help="The instance-id to use for each server from (default: ami-7c807d14).")
+                        action='store', dest='instance', type='string', default='ami-50842d38',
+                        help="The instance-id to use for each server from (default: ami-50842d38 Amazon AMI 2014.09).")
     up_group.add_option('-t', '--type', metavar="TYPE", nargs=1,
                         action='store', dest='type', type='string', default='t1.micro',
                         help="The instance-type to use for each server (default: t1.micro).")

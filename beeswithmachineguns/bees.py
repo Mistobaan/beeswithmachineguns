@@ -298,6 +298,137 @@ def down():
     _delete_server_list()
 
 
+def _install_vegeta(client):
+    # install
+    channel = client.invoke_shell()
+    stdin = channel.makefile('wb')
+    stdout = channel.makefile('rb')
+
+    stdin.write(b'sudo yum install -y docker\r')
+    stdin.write(b'sudo service docker start\r')
+    stdin.write(
+        b'curl https://raw.githubusercontent.com/Mistobaan/beeswithmachineguns/feature/spot-instances/Dockerfile > Dockerfile\r')
+    stdin.write(b'sudo docker build -t beeswithmachineguns/client:latest .\r')
+    stdin.write(b'sudo yum install -y httpd-tools\rexit\r')
+
+    stdin.write(b'exit\r')
+
+    print stdout.read()
+
+
+def _run_vegeta(client, params, options):
+    channel = client.invoke_shell()
+    stdin = channel.makefile('wb')
+    stdout = channel.makefile('rb')
+    print "Running Vegeta "
+    cmd = b'sudo docker run -t -i -v /tmp:/tmp -w /tmp --rm beeswithmachineguns/client:latest attack -duration=1m -cpus=4 -targets=/tmp/targets -output=result.bin \r'
+    print cmd
+    stdin.write(cmd)
+    cmd = b'sudo docker run -t -i -v /tmp:/tmp -w /tmp --rm beeswithmachineguns/client:latest report -input=/tmp/result.bin -reporter=json -output=/tmp/output.json \r'
+    print cmd
+    stdin.write(cmd)
+
+    stdin.write(b'exit\r')
+
+    print stdout.read()
+    print "vegeta done"
+
+
+import subprocess
+
+
+def _upload(params, source, destination):
+    print "Uploading ", source, " to ", destination
+    pem_file_path = _get_pem_path(params['key_name'])
+    cmd = [
+        "scp", "-q", "-o", "StrictHostKeyChecking=no", "-i", pem_file_path, source, "%s@%s:%s" % (params['username'],
+                                                                                                  params[
+                                                                                                  'instance_name'],
+                                                                                                  destination)]
+    print cmd
+    output = subprocess.check_output(cmd)
+    print "upload done"
+
+
+def _run_ab(client, params, options):
+    stdin, stdout, stderr = client.exec_command('mktemp')
+    params['csv_filename'] = stdout.read().strip()
+    if params['csv_filename']:
+        options += ' -e %(csv_filename)s' % params
+    else:
+        print 'Bee %i lost sight of the target (connection timed out creating csv_filename).' % params['i']
+        return None
+
+    if params['post_file']:
+        pem_file_path = _get_pem_path(params['key_name'])
+        _upload(params, pem_file_path, "/tmp/honeycomb")
+        pem_file_path = _get_pem_path(params['key_name'])
+        os.system(
+            "scp -q -o 'StrictHostKeyChecking=no' -i %s %s %s@%s:/tmp/honeycomb" %
+            (pem_file_path, params['post_file'], params['username'], params['instance_name']))
+        options += ' -T "%(mime_type)s; charset=UTF-8" -p /tmp/honeycomb' % params
+
+    if params['keep_alive']:
+        options += ' -k'
+
+    if params['cookies'] is not '':
+        options += ' -H \"Cookie: %ssessionid=NotARealSessionID;\"' % params[
+            'cookies']
+    else:
+        options += ' -C \"sessionid=NotARealSessionID\"'
+
+    if params['basic_auth'] is not '':
+        options += ' -A %s' % params['basic_auth']
+
+    params['options'] = options
+    benchmark_command = 'ab -r -n %(num_requests)s -c %(concurrent_requests)s %(options)s "%(url)s"' % params
+    stdin, stdout, stderr = client.exec_command(benchmark_command)
+
+    response = {}
+
+    ab_results = stdout.read()
+    ms_per_request_search = re.search(
+        'Time\ per\ request:\s+([0-9.]+)\ \[ms\]\ \(mean\)', ab_results)
+
+    if not ms_per_request_search:
+        print 'Bee %i lost sight of the target (connection timed out running ab).' % params['i']
+        return None
+
+    requests_per_second_search = re.search(
+        'Requests\ per\ second:\s+([0-9.]+)\ \[#\/sec\]\ \(mean\)', ab_results)
+    failed_requests = re.search(
+        'Failed\ requests:\s+([0-9.]+)', ab_results)
+    complete_requests_search = re.search(
+        'Complete\ requests:\s+([0-9]+)', ab_results)
+
+    response['ms_per_request'] = float(ms_per_request_search.group(1))
+    response['requests_per_second'] = float(
+        requests_per_second_search.group(1))
+    response['failed_requests'] = float(failed_requests.group(1))
+    response['complete_requests'] = float(
+        complete_requests_search.group(1))
+
+    stdin, stdout, stderr = client.exec_command(
+        'cat %(csv_filename)s' % params)
+    response['request_time_cdf'] = []
+    for row in csv.DictReader(stdout):
+        row["Time in ms"] = float(row["Time in ms"])
+        response['request_time_cdf'].append(row)
+    if not response['request_time_cdf']:
+        print 'Bee %i lost sight of the target (connection timed out reading csv).' % params['i']
+        return None
+
+    print 'Bee %i is out of ammo.' % params['i']
+
+
+def _install_ab(client):
+    channel = client.invoke_shell()
+    stdin = channel.makefile('wb')
+    stdout = channel.makefile('rb')
+    stdin.write(b'sudo yum install -y httpd-tools\rexit\r')
+    print stdout.read()
+
+
 def _attack(params):
     """
     Test the target URL with requests.
@@ -330,84 +461,14 @@ def _attack(params):
                 if h != '':
                     options += ' -H "%s"' % h.strip()
 
-        # install
-        channel = client.invoke_shell()
-        stdin = channel.makefile('wb')
-        stdout = channel.makefile('rb')
-
-        stdin.write(b'sudo yum install -y httpd-tools\rexit\r')
-
-        print stdout.read()
-
-        stdin, stdout, stderr = client.exec_command('mktemp')
-        params['csv_filename'] = stdout.read().strip()
-        if params['csv_filename']:
-            options += ' -e %(csv_filename)s' % params
+        if False:
+            _install_ab(client)
+            response = _run_ab(client, params, options)
         else:
-            print 'Bee %i lost sight of the target (connection timed out creating csv_filename).' % params['i']
-            return None
-
-        if params['post_file']:
-            pem_file_path = _get_pem_path(params['key_name'])
-            os.system(
-                "scp -q -o 'StrictHostKeyChecking=no' -i %s %s %s@%s:/tmp/honeycomb" %
-                (pem_file_path, params['post_file'], params['username'], params['instance_name']))
-            options += ' -T "%(mime_type)s; charset=UTF-8" -p /tmp/honeycomb' % params
-
-        if params['keep_alive']:
-            options += ' -k'
-
-        if params['cookies'] is not '':
-            options += ' -H \"Cookie: %ssessionid=NotARealSessionID;\"' % params[
-                'cookies']
-        else:
-            options += ' -C \"sessionid=NotARealSessionID\"'
-
-        if params['basic_auth'] is not '':
-            options += ' -A %s' % params['basic_auth']
-
-        params['options'] = options
-        benchmark_command = 'ab -r -n %(num_requests)s -c %(concurrent_requests)s %(options)s "%(url)s"' % params
-        stdin, stdout, stderr = client.exec_command(benchmark_command)
-
-        response = {}
-
-        ab_results = stdout.read()
-        ms_per_request_search = re.search(
-            'Time\ per\ request:\s+([0-9.]+)\ \[ms\]\ \(mean\)', ab_results)
-
-        if not ms_per_request_search:
-            print 'Bee %i lost sight of the target (connection timed out running ab).' % params['i']
-            return None
-
-        requests_per_second_search = re.search(
-            'Requests\ per\ second:\s+([0-9.]+)\ \[#\/sec\]\ \(mean\)', ab_results)
-        failed_requests = re.search(
-            'Failed\ requests:\s+([0-9.]+)', ab_results)
-        complete_requests_search = re.search(
-            'Complete\ requests:\s+([0-9]+)', ab_results)
-
-        response['ms_per_request'] = float(ms_per_request_search.group(1))
-        response['requests_per_second'] = float(
-            requests_per_second_search.group(1))
-        response['failed_requests'] = float(failed_requests.group(1))
-        response['complete_requests'] = float(
-            complete_requests_search.group(1))
-
-        stdin, stdout, stderr = client.exec_command(
-            'cat %(csv_filename)s' % params)
-        response['request_time_cdf'] = []
-        for row in csv.DictReader(stdout):
-            row["Time in ms"] = float(row["Time in ms"])
-            response['request_time_cdf'].append(row)
-        if not response['request_time_cdf']:
-            print 'Bee %i lost sight of the target (connection timed out reading csv).' % params['i']
-            return None
-
-        print 'Bee %i is out of ammo.' % params['i']
-
+            _install_vegeta(client)
+            _upload(params, "./targets", "/tmp/targets")
+            response = _run_vegeta(client, params, options)
         client.close()
-
         return response
     except socket.error, e:
         import traceback
@@ -679,6 +740,7 @@ def attack(url, n, c, **options):
         for p in params:
             print "Bee %s" % p["instance_name"]
             results.append(_attack(p))
+            print "Bee %s DONE" % p["instance_name"]
 
     summarized_results = _summarize_results(results, params, csv_filename)
     print 'Offensive complete.'
