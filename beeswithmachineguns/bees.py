@@ -316,15 +316,19 @@ def _install_vegeta(client):
     print stdout.read()
 
 
+import json
+
+
 def _run_vegeta(client, params, options):
+    response = {}
     channel = client.invoke_shell()
     stdin = channel.makefile('wb')
     stdout = channel.makefile('rb')
     print "Running Vegeta "
-    cmd = b'sudo docker run -t -i -v /tmp:/tmp -w /tmp --rm beeswithmachineguns/client:latest attack -duration=1m -cpus=4 -targets=/tmp/targets -output=result.bin \r'
+    cmd = b'sudo docker run -v /tmp:/tmp -w /tmp --rm beeswithmachineguns/client:latest attack -duration=1m -targets=/tmp/targets -output=result.bin \r'
     print cmd
     stdin.write(cmd)
-    cmd = b'sudo docker run -t -i -v /tmp:/tmp -w /tmp --rm beeswithmachineguns/client:latest report -input=/tmp/result.bin -reporter=json -output=/tmp/output.json \r'
+    cmd = b'sudo docker run -v /tmp:/tmp -w /tmp --rm beeswithmachineguns/client:latest report -input=/tmp/result.bin -reporter=json -output=/tmp/output.json \r'
     print cmd
     stdin.write(cmd)
 
@@ -332,7 +336,11 @@ def _run_vegeta(client, params, options):
 
     print stdout.read()
     print "vegeta done"
-
+    stdin, stdout, stderr = client.exec_command(
+        'cat /tmp/output.json' % params)
+    response['result'] = json.loads(stdout.read())
+    print response['result']
+    return response
 
 import subprocess
 
