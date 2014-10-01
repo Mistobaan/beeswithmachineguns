@@ -354,7 +354,7 @@ def _upload(params, source, destination):
                                                                                                   'instance_name'],
                                                                                                   destination)]
     print cmd
-    output = subprocess.check_output(cmd)
+    subprocess.check_output(cmd)
     print "upload done"
 
 
@@ -429,6 +429,43 @@ def _run_ab(client, params, options):
     print 'Bee %i is out of ammo.' % params['i']
 
 
+from itertools import izip_longest
+
+
+def grouper(n, iterable, fillvalue=None):
+    "Collect data into fixed-length chunks or blocks"
+    # grouper(3, 'ABCDEFG', 'x') --> ABC DEF Gxx
+    args = [iter(iterable)] * n
+    return izip_longest(fillvalue=fillvalue, *args)
+
+
+import os
+import tempfile
+import math
+
+
+def _split(filename, n):
+    chunks = []
+    lines = 0
+    with open(filename) as f:
+        f.readline()
+        lines += 1
+    lines_per_file = int(math.ceil(lines / float(n)))
+    with open(filename) as f:
+        for i, g in enumerate(grouper(lines_per_file, f, fillvalue=None)):
+            with tempfile.NamedTemporaryFile('w', delete=False) as fout:
+                # count number of lines in group
+                for j, line in enumerate(g, 1):
+                    if line is None:
+                        j -= 1  # don't count this line
+                        break
+                    fout.write(line)
+            result = 'small_file_{0}'.format(i * n + j)
+            os.rename(fout.name, result)
+            chunks.append(result)
+    return chunks
+
+
 def _install_ab(client):
     channel = client.invoke_shell()
     stdin = channel.makefile('wb')
@@ -474,7 +511,7 @@ def _attack(params):
             response = _run_ab(client, params, options)
         else:
             _install_vegeta(client)
-            _upload(params, "./targets", "/tmp/targets")
+            _upload(params, params["target_file"], "/tmp/targets")
             response = _run_vegeta(client, params, options)
         client.close()
         return response
@@ -681,8 +718,11 @@ def attack(url, n, c, **options):
 
     params = []
 
+    chunks = _split("./targets_all", len(instances))
+
     for i, instance in enumerate(instances):
         params.append({
+            'target_file': chunks[i],
             'i': i,
             'instance_id': instance.id,
             'instance_name': instance.public_dns_name,
